@@ -13,7 +13,7 @@
 ## 🚀 One-Line Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/youruser/EasyInstall-Ultra/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/sugan0927/EasyInstall Ultra/main/install.sh | sudo bash
 sudo easyinstall install
 ```
 
