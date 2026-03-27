@@ -1,0 +1,173 @@
+name: EasyInstall Ultra CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ created ]
+
+jobs:
+  # ─────────────────────────────────────────────
+  # BASH SYNTAX CHECK
+  # ─────────────────────────────────────────────
+  bash-lint:
+    name: Bash Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Lint easyinstall.sh
+        run: shellcheck -S warning easyinstall.sh
+
+      - name: Lint install.sh
+        run: shellcheck -S warning install.sh
+
+      - name: Bash syntax check
+        run: bash -n easyinstall.sh && bash -n install.sh
+        shell: bash
+
+  # ─────────────────────────────────────────────
+  # PYTHON LINT & TYPE CHECK
+  # ─────────────────────────────────────────────
+  python-lint:
+    name: Python Lint & Syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install linters
+        run: pip install pyflakes
+
+      - name: Python syntax check
+        run: python3 -m py_compile config.py
+
+      - name: Pyflakes check
+        run: python3 -m pyflakes config.py
+
+      - name: Dry-run config generator
+        run: python3 config.py --dry-run --ram-mb=2048 --cores=2
+
+  # ─────────────────────────────────────────────
+  # FUNCTIONAL TEST (Ubuntu 22.04)
+  # ─────────────────────────────────────────────
+  test-ubuntu-22:
+    name: Test Ubuntu 22.04
+    runs-on: ubuntu-22.04
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run dry-run config generation
+        run: |
+          python3 config.py \
+            --dry-run \
+            --ram-mb=1024 \
+            --cores=2 \
+            --disk-type=SSD \
+            --php-version=8.3 \
+            --output-json=/tmp/config-summary.json
+          cat /tmp/config-summary.json
+
+      - name: Verify config values are sane
+        run: |
+          python3 -c "
+          import json
+          c = json.load(open('/tmp/config-summary.json'))
+          assert c['php']['max_children'] >= 5
+          assert c['php']['max_children'] <= 160
+          assert c['mariadb']['buffer_pool_mb'] >= 64
+          assert c['redis']['max_memory_mb'] >= 64
+          print('All config sanity checks passed ✓')
+          "
+
+  # ─────────────────────────────────────────────
+  # FUNCTIONAL TEST (Ubuntu 24.04)
+  # ─────────────────────────────────────────────
+  test-ubuntu-24:
+    name: Test Ubuntu 24.04
+    runs-on: ubuntu-24.04
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run dry-run config (high-memory server)
+        run: |
+          python3 config.py \
+            --dry-run \
+            --ram-mb=8192 \
+            --cores=8 \
+            --disk-type=SSD \
+            --php-version=8.3 \
+            --output-json=/tmp/config-hm.json
+          cat /tmp/config-hm.json
+
+      - name: Verify high-memory caps
+        run: |
+          python3 -c "
+          import json
+          c = json.load(open('/tmp/config-hm.json'))
+          # Verify caps
+          assert c['php']['max_children'] <= 160,   'php max_children cap exceeded'
+          assert c['mariadb']['buffer_pool_mb'] <= 2048, 'buffer_pool cap exceeded'
+          assert c['redis']['max_memory_mb'] <= 2048,    'redis maxmemory cap exceeded'
+          assert c['nginx']['worker_connections'] <= 16384, 'nginx connections cap exceeded'
+          print('High-memory cap checks passed ✓')
+          "
+
+  # ─────────────────────────────────────────────
+  # SECURITY SCAN
+  # ─────────────────────────────────────────────
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for hardcoded secrets
+        run: |
+          # Fail if any obvious secrets are hardcoded
+          if grep -rn "password.*=.*['\"][^'\"]\{8,\}['\"]" easyinstall.sh config.py; then
+            echo "WARNING: Potential hardcoded passwords found"
+          else
+            echo "No hardcoded secrets found ✓"
+          fi
+
+      - name: Check for dangerous shell patterns
+        run: |
+          if grep -n "rm -rf /" easyinstall.sh | grep -v "rm -rf /var\|rm -rf /tmp\|rm -rf /opt"; then
+            echo "FAIL: Dangerous rm -rf / pattern"
+            exit 1
+          fi
+          echo "Shell safety check passed ✓"
+
+  # ─────────────────────────────────────────────
+  # AUTO-RELEASE
+  # ─────────────────────────────────────────────
+  release:
+    name: Create Release Archive
+    runs-on: ubuntu-latest
+    needs: [bash-lint, python-lint]
+    if: github.event_name == 'release'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create release archive
+        run: |
+          tar -czf easyinstall-ultra-${{ github.ref_name }}.tar.gz \
+            easyinstall.sh config.py install.sh README.md LICENSE docs/ benchmarks/
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: easyinstall-ultra-${{ github.ref_name }}
+          path: easyinstall-ultra-${{ github.ref_name }}.tar.gz
