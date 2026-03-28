@@ -1305,11 +1305,13 @@ handle_command() {
 
         list)
             echo -e "\n${BOLD}Installed WordPress Sites:${NC}"
-            for conf in "${CONFIG_DIR}/sites/"*.conf 2>/dev/null; do
+            shopt -s nullglob
+            for conf in "${CONFIG_DIR}/sites/"*.conf; do
                 [[ -f "$conf" ]] || continue
                 source "$conf"
                 echo -e "  → ${DOMAIN} (PHP ${PHP_VERSION}) - Created: ${CREATED}"
             done
+            shopt -u nullglob
             ;;
 
         ssl) setup_ssl "${1:-}" ;;
