@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-REPO_URL="https://github.com/sugan0927/easy-install-Ultra"
+REPO_URL="https://github.com/youruser/EasyInstall-Ultra"
 INSTALL_DIR="/opt/EasyInstall-Ultra"
 BRANCH="main"
 
@@ -22,7 +22,8 @@ echo -e "${NC}"
 
 # OS check
 if [[ -f /etc/os-release ]]; then
-    source /etc/os-release
+    ID=$(grep -oP '(?<=^ID=).+' /etc/os-release | tr -d '"')
+    PRETTY_NAME=$(grep -oP '(?<=^PRETTY_NAME=).+' /etc/os-release | tr -d '"')
     case "${ID}" in
         ubuntu|debian) echo -e "${GREEN}✓ OS: ${PRETTY_NAME}${NC}" ;;
         *) echo -e "${RED}✗ Unsupported OS. Use Ubuntu 22.04/24.04 or Debian 11/12${NC}"; exit 1 ;;

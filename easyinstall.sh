@@ -138,11 +138,10 @@ detect_hardware() {
         [[ "$vendor" == *"Vultr"* ]]  && CLOUD_PROVIDER="vultr"
     fi
 
-    # OS Detection
+    # OS Detection (grep instead of source to avoid readonly variable conflicts)
     if [[ -f /etc/os-release ]]; then
-        source /etc/os-release
-        OS_ID="${ID}"
-        OS_VERSION="${VERSION_ID}"
+        OS_ID=$(grep -oP '(?<=^ID=).+' /etc/os-release | tr -d '"')
+        OS_VERSION=$(grep -oP '(?<=^VERSION_ID=).+' /etc/os-release | tr -d '"')
     fi
 
     log "INFO" "Hardware: ${TOTAL_RAM_MB}MB RAM | ${TOTAL_CORES} cores | ${DISK_TYPE} | ${CLOUD_PROVIDER} | ${OS_ID} ${OS_VERSION}"
