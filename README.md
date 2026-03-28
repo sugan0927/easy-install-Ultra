@@ -14,7 +14,6 @@
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sugan0927/easy-install-Ultra/main/install.sh | sudo bash
-sudo easyinstall install
 ```
 
 ---
