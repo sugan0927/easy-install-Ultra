@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # EasyInstall Ultra - Bootstrap Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/youruser/EasyInstall-Ultra/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/sugan0927/easy-install-Ultra/main/install.sh | sudo bash
 
 set -euo pipefail
 
