@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-REPO_URL="https://github.com/youruser/EasyInstall-Ultra"
+REPO_URL="https://github.com/sugan0927/easy-install-Ultra"
 INSTALL_DIR="/opt/EasyInstall-Ultra"
 BRANCH="main"
 
