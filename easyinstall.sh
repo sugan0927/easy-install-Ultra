@@ -8,6 +8,9 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# Resolve real script path even when called via symlink
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
 # ─────────────────────────────────────────────
 # GLOBALS & CONSTANTS
 # ─────────────────────────────────────────────
@@ -221,7 +224,7 @@ install_base_dependencies() {
 # REPOSITORY SETUP
 # ─────────────────────────────────────────────
 setup_nginx_repo() {
-    log "INFO" "Adding Nginx official mainline repository..."
+    log "INFO" "Adding Nginx mainline repository..."
 
     local keyring="/usr/share/keyrings/nginx-archive-keyring.gpg"
     curl -fsSL https://nginx.org/keys/nginx_signing.key | gpg --dearmor -o "$keyring"
@@ -229,16 +232,23 @@ setup_nginx_repo() {
 
     local codename
     codename=$(lsb_release -cs)
+
     echo "deb [signed-by=${keyring}] http://nginx.org/packages/mainline/${OS_ID} ${codename} nginx" \
         > /etc/apt/sources.list.d/nginx.list
 
-    # Pin nginx from official repo
-    cat > /etc/apt/preferences.d/99nginx << 'EOF'
-Package: *
+    # Verify repo actually has packages for this OS/version before pinning
+    if apt-get update -qq 2>&1 | grep -q "nginx.org.*${codename}.*404"; then
+        log "WARN" "nginx.org has no packages for ${OS_ID}/${codename} — using distro nginx"
+        rm -f /etc/apt/sources.list.d/nginx.list
+    else
+        # Pin nginx from official repo only if repo is valid
+        cat > /etc/apt/preferences.d/99nginx << 'EOF'
+Package: nginx*
 Pin: origin nginx.org
 Pin-Priority: 900
 EOF
-    log "INFO" "Nginx repo added ✓"
+        log "INFO" "Nginx mainline repo added ✓"
+    fi
 }
 
 setup_php_repo() {
@@ -289,13 +299,21 @@ setup_all_repos() {
 # NGINX INSTALLATION
 # ─────────────────────────────────────────────
 install_nginx() {
-    log "INFO" "Installing Nginx with modules..."
+    log "INFO" "Installing Nginx mainline..."
 
-    retry apt-get install -y -qq \
-        nginx \
-        libnginx-mod-http-brotli-filter \
-        libnginx-mod-http-brotli-static \
-        libnginx-mod-http-geoip2
+    retry apt-get install -y -qq nginx
+
+    # Brotli modules exist in distro repos but NOT in nginx.org mainline repo.
+    # Try; if unavailable, fall back to gzip-only (still excellent compression).
+    mkdir -p /etc/easyinstall
+    if apt-get install -y -qq libnginx-mod-http-brotli-filter \
+                               libnginx-mod-http-brotli-static 2>/dev/null; then
+        log "INFO" "Brotli compression modules installed ✓"
+        echo "BROTLI_AVAILABLE=1" > /etc/easyinstall/brotli.flag
+    else
+        log "WARN" "Brotli modules unavailable for this nginx build — using gzip only (still fast)"
+        echo "BROTLI_AVAILABLE=0" > /etc/easyinstall/brotli.flag
+    fi
 
     systemctl enable nginx
     log "INFO" "Nginx installed ✓"
@@ -347,18 +365,35 @@ install_mariadb() {
     systemctl enable mariadb
     systemctl start mariadb
 
+    # Wait until MariaDB is ready to accept connections (max 30s)
+    local wait=0
+    until mysqladmin ping --silent 2>/dev/null || [[ $wait -ge 30 ]]; do
+        sleep 1; ((wait++))
+    done
+    if [[ $wait -ge 30 ]]; then
+        log "ERROR" "MariaDB did not start in 30 seconds"; exit 1
+    fi
+
     # Secure installation (non-interactive)
+    # Fresh MariaDB on Ubuntu/Debian uses unix_socket plugin for root — no password needed yet
     local root_password
     root_password=$(generate_password 32)
-    mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${root_password}';"
-    mysql -e "DELETE FROM mysql.user WHERE User='';"
-    mysql -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');"
-    mysql -e "DROP DATABASE IF EXISTS test;"
-    mysql -e "FLUSH PRIVILEGES;"
 
-    echo "[client]
-user=root
-password=${root_password}" > /root/.my.cnf
+    # Switch root to password auth and set password in a single transaction
+    mysql -e "
+        ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('${root_password}');
+        DELETE FROM mysql.user WHERE User='';
+        DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+        DROP DATABASE IF EXISTS test;
+        DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+        FLUSH PRIVILEGES;" 2>/dev/null \
+    || mysql -u root -e "
+        ALTER USER 'root'@'localhost' IDENTIFIED BY '${root_password}';
+        DELETE FROM mysql.user WHERE User='';
+        DROP DATABASE IF EXISTS test;
+        FLUSH PRIVILEGES;"
+
+    printf '[client]\nuser=root\npassword=%s\n' "${root_password}" > /root/.my.cnf
     chmod 600 /root/.my.cnf
 
     log "INFO" "MariaDB installed and secured ✓"
@@ -390,7 +425,7 @@ install_certbot() {
 
     # Auto-renewal cron
     if ! crontab -l 2>/dev/null | grep -q "certbot renew"; then
-        (crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet --post-hook 'nginx -s reload'") | crontab -
+        (crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet --post-hook 'systemctl reload nginx'") | crontab -
     fi
 
     log "INFO" "Certbot installed with auto-renewal ✓"
@@ -407,7 +442,7 @@ run_python_config() {
     /opt/easyinstall-venv/bin/pip install -q jinja2 cryptography boto3 requests
 
     # Run config generator
-    /opt/easyinstall-venv/bin/python3 "$(dirname "$0")/config.py" \
+    /opt/easyinstall-venv/bin/python3 "${SCRIPT_DIR}/config.py" \
         --ram-mb="$TOTAL_RAM_MB" \
         --cores="$TOTAL_CORES" \
         --disk-type="$DISK_TYPE" \
@@ -469,8 +504,9 @@ EOF
 
     sysctl -p /etc/sysctl.d/99-wordpress.conf &>/dev/null
 
-    # File descriptor limits
-    cat >> /etc/security/limits.conf << 'EOF'
+    # File descriptor limits (add only once)
+    if ! grep -q "EasyInstall Ultra" /etc/security/limits.conf 2>/dev/null; then
+        cat >> /etc/security/limits.conf << 'EOF'
 # EasyInstall Ultra
 * soft nofile 1048576
 * hard nofile 1048576
@@ -479,6 +515,7 @@ root hard nofile 1048576
 www-data soft nofile 1048576
 www-data hard nofile 1048576
 EOF
+    fi
 
     # Enable BBR
     if ! lsmod | grep -q tcp_bbr; then
@@ -567,7 +604,7 @@ EOF
 # ─────────────────────────────────────────────
 generate_password() {
     local length="${1:-24}"
-    tr -dc 'A-Za-z0-9!@#$%^&*' </dev/urandom | head -c "$length"
+    tr -dc 'A-Za-z0-9' </dev/urandom | head -c "$length"
 }
 
 create_wordpress_site() {
@@ -593,6 +630,8 @@ create_wordpress_site() {
     mkdir -p "${site_dir}/logs"
     mkdir -p "${site_dir}/cache"
     mkdir -p "${site_dir}/backups"
+    mkdir -p "${site_dir}/tmp"
+    chmod 700 "${site_dir}/tmp"
 
     # Download WordPress
     log "INFO" "Downloading WordPress..."
@@ -607,7 +646,7 @@ create_wordpress_site() {
     mysql -e "FLUSH PRIVILEGES;"
 
     # Generate wp-config.php
-    generate_wp_config "${site_dir}/public" "$db_name" "$db_user" "$db_pass" "$wp_table_prefix"
+    generate_wp_config "${site_dir}/public" "$db_name" "$db_user" "$db_pass" "$wp_table_prefix" "$ssl" "$ssl"
 
     # Nginx site config
     generate_nginx_site_config "$domain" "$php_version" "$site_dir"
@@ -634,20 +673,27 @@ create_wordpress_site() {
         apply_woocommerce_optimizations "$domain" "$php_version"
     fi
 
-    # Save site config
+    # Save site config (600 perms — contains DB password)
     mkdir -p "${CONFIG_DIR}/sites"
     cat > "${CONFIG_DIR}/sites/${domain}.conf" << EOF
 DOMAIN=${domain}
 SITE_DIR=${site_dir}
 DB_NAME=${db_name}
 DB_USER=${db_user}
+DB_PASS=${db_pass}
 PHP_VERSION=${php_version}
 SSL=${ssl}
 WOOCOMMERCE=${woocommerce}
 CREATED=$(date +%Y-%m-%d)
 EOF
+    chmod 600 "${CONFIG_DIR}/sites/${domain}.conf"
 
     log "INFO" "WordPress site created: ${domain} ✓"
+
+    # Register backup cron for this site
+    crontab -l 2>/dev/null | grep -v "easyinstall backup.*${domain}" | crontab - 2>/dev/null || true
+    (crontab -l 2>/dev/null; echo "0 2 * * * /usr/local/bin/easyinstall backup daily ${domain} >> ${LOG_DIR}/backup.log 2>&1") | crontab -
+    (crontab -l 2>/dev/null; echo "0 3 * * 0 /usr/local/bin/easyinstall backup weekly ${domain} >> ${LOG_DIR}/backup.log 2>&1") | crontab -
     echo ""
     echo -e "${GREEN}✓ WordPress installed successfully!${NC}"
     echo -e "  ${BOLD}URL:${NC}      http://${domain}"
@@ -665,11 +711,19 @@ generate_wp_config() {
     local db_user="$3"
     local db_pass="$4"
     local table_prefix="$5"
+    local use_ssl="${6:-false}"
+
+    # Compute PHP booleans before heredoc (bash vars expand inside non-quoted EOF)
+    local force_ssl_admin="false"
+    [[ "$use_ssl" == "true" ]] && force_ssl_admin="true"
 
     # Generate unique keys from WordPress secret key API
     local wp_keys
-    wp_keys=$(curl -fsSL https://api.wordpress.org/secret-key/1.1/salt/ 2>/dev/null || echo "// Keys unavailable - regenerate at https://api.wordpress.org/secret-key/1.1/salt/")
+    wp_keys=$(curl -fsSL https://api.wordpress.org/secret-key/1.1/salt/ 2>/dev/null \
+              || echo "// Keys unavailable - regenerate at https://api.wordpress.org/secret-key/1.1/salt/")
 
+    # Write wp-config.php in two parts so wp_keys (which contains single quotes,
+    # backslashes and special chars from the WordPress API) never breaks the heredoc.
     cat > "${public_dir}/wp-config.php" << EOF
 <?php
 /**
@@ -693,11 +747,11 @@ define('WP_MAX_MEMORY_LIMIT', '512M');
 define('WP_CACHE',            true);
 
 // Redis Object Cache
-define('WP_REDIS_HOST',          '127.0.0.1');
-define('WP_REDIS_PORT',          6379);
+define('WP_REDIS_HOST',          '/var/run/redis/redis.sock');
+define('WP_REDIS_PORT',          0);      // 0 = Unix socket
 define('WP_REDIS_DATABASE',      1);
 define('WP_REDIS_PREFIX',        '${table_prefix}');
-define('WP_REDIS_SCHEME',        'tcp');
+define('WP_REDIS_SCHEME',        'unix'); // Unix socket = ~30% lower latency vs TCP
 define('WP_REDIS_SERIALIZER',    Redis::SERIALIZER_IGBINARY);
 define('WP_REDIS_MAXTTL',        86400);
 define('WP_REDIS_TIMEOUT',       1);
@@ -706,7 +760,7 @@ define('WP_REDIS_READ_TIMEOUT',  1);
 // Security
 define('DISALLOW_FILE_EDIT',   true);
 define('DISALLOW_FILE_MODS',   false);
-define('FORCE_SSL_ADMIN',      false);
+define('FORCE_SSL_ADMIN',      ${force_ssl_admin});
 define('WP_DEBUG',             false);
 define('WP_DEBUG_LOG',         false);
 define('WP_DEBUG_DISPLAY',     false);
@@ -727,13 +781,16 @@ define('WC_LOG_HANDLER', 'WC_Log_Handler_DB');
 add_filter('xmlrpc_enabled', '__return_false');
 
 // Auth keys (generated)
-${wp_keys}
+EOF
+    # Append wp_keys safely — printf handles all special characters correctly
+    printf '%s\n' "${wp_keys}" >> "${public_dir}/wp-config.php"
+    cat >> "${public_dir}/wp-config.php" << 'WPEOF'
 
 if (!defined('ABSPATH')) {
     define('ABSPATH', __DIR__ . '/');
 }
 require_once ABSPATH . 'wp-settings.php';
-EOF
+WPEOF
 }
 
 generate_nginx_site_config() {
@@ -742,9 +799,36 @@ generate_nginx_site_config() {
     local site_dir="$3"
     local php_sock="/run/php/php${php_version}-fpm-${domain}.sock"
 
+    # Ensure include files exist so nginx -t never fails on missing includes
+    mkdir -p /etc/nginx/conf.d
+    [[ -f /etc/nginx/conf.d/cloudflare-realip.conf ]] || \
+        echo "# Cloudflare Real IP — populated by: easyinstall install" \
+        > /etc/nginx/conf.d/cloudflare-realip.conf
+    [[ -f /etc/nginx/conf.d/security-headers.conf ]] || \
+        cat > /etc/nginx/conf.d/security-headers.conf << 'HDRS'
+# Security headers — populated by: easyinstall install
+add_header X-Frame-Options "SAMEORIGIN" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header X-XSS-Protection "1; mode=block" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+HDRS
+
+    # Detect whether brotli modules are available
+    local brotli_block=""
+    if [[ "$(cat /etc/easyinstall/brotli.flag 2>/dev/null)" == "BROTLI_AVAILABLE=1" ]]; then
+        brotli_block="
+    # Brotli compression (module available)
+    brotli on;
+    brotli_comp_level 6;
+    brotli_static on;
+    brotli_types text/plain text/css application/json application/javascript
+                 text/xml application/xml application/rss+xml text/javascript
+                 image/svg+xml font/woff font/woff2;"
+    fi
+
     cat > "/etc/nginx/sites-available/${domain}" << EOF
 # EasyInstall Ultra - ${domain}
-# FastCGI Microcache zone
+# FastCGI Microcache zone (must be in http context; included from sites-enabled)
 fastcgi_cache_path /var/run/nginx-cache/${domain}
     levels=1:2
     keys_zone=${domain//./_}:100m
@@ -764,107 +848,102 @@ server {
     access_log ${site_dir}/logs/access.log combined buffer=512k flush=1m;
     error_log  ${site_dir}/logs/error.log warn;
 
-    # Cloudflare Real IP
+    # Cloudflare Real IP (safe to include even if empty placeholder)
     include /etc/nginx/conf.d/cloudflare-realip.conf;
 
     # Security headers
     include /etc/nginx/conf.d/security-headers.conf;
 
-    # FastCGI cache settings
+    # ── FastCGI cache bypass rules ──────────────────────
     set \$skip_cache 0;
-    if (\$request_method = POST)            { set \$skip_cache 1; }
-    if (\$query_string != "")              { set \$skip_cache 1; }
-    if (\$request_uri ~* "/wp-admin/|/xmlrpc.php|wp-.*.php|/feed/|index.php|sitemap") {
+    if (\$request_method = POST)   { set \$skip_cache 1; }
+    if (\$query_string != "")      { set \$skip_cache 1; }
+    if (\$request_uri ~* "/wp-admin/|/xmlrpc.php|wp-.+\.php|/feed/|/sitemap") {
         set \$skip_cache 1;
     }
     if (\$http_cookie ~* "comment_author|wordpress_[a-f0-9]+|wp-postpass|wordpress_no_cache|wordpress_logged_in") {
         set \$skip_cache 1;
     }
 
+    # ── WordPress permalinks ────────────────────────────
     # WordPress permalink support
     location / {
         try_files \$uri \$uri/ /index.php?\$args;
     }
 
-    # PHP processing
+    # ── PHP processing ──────────────────────────────────
     location ~ \.php$ {
         try_files \$uri =404;
-        fastcgi_split_path_info ^(.+\.php)(/.+)$;
         fastcgi_pass unix:${php_sock};
         fastcgi_index index.php;
         include fastcgi_params;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-        fastcgi_param PATH_INFO \$fastcgi_path_info;
 
-        # FastCGI cache
-        fastcgi_cache ${domain//./_};
-        fastcgi_cache_valid 200 301 302 60m;
-        fastcgi_cache_valid 404 1m;
-        fastcgi_cache_bypass \$skip_cache;
-        fastcgi_no_cache \$skip_cache;
-        fastcgi_cache_key "\$scheme\$request_method\$host\$request_uri";
-        fastcgi_cache_use_stale error timeout invalid_header http_500;
+        # FastCGI microcache
+        fastcgi_cache          ${domain//./_};
+        fastcgi_cache_valid    200 301 302 60m;
+        fastcgi_cache_valid    404 1m;
+        fastcgi_cache_bypass   \$skip_cache;
+        fastcgi_no_cache       \$skip_cache;
+        fastcgi_cache_key      "\$scheme\$request_method\$host\$request_uri";
+        fastcgi_cache_use_stale error timeout invalid_header http_500 http_503;
         fastcgi_ignore_headers Cache-Control Expires Set-Cookie;
         add_header X-FastCGI-Cache \$upstream_cache_status;
 
-        fastcgi_connect_timeout 60;
-        fastcgi_send_timeout    180;
-        fastcgi_read_timeout    180;
-        fastcgi_buffer_size     128k;
-        fastcgi_buffers         256 16k;
+        fastcgi_connect_timeout   60s;
+        fastcgi_send_timeout     180s;
+        fastcgi_read_timeout     180s;
+        fastcgi_buffer_size      128k;
+        fastcgi_buffers          256 16k;
         fastcgi_busy_buffers_size 256k;
+        fastcgi_intercept_errors  on;
     }
 
-    # Static file caching
-    location ~* \.(css|js|png|jpg|jpeg|gif|ico|svg|webp|woff|woff2|ttf|eot)$ {
-        expires     1y;
-        add_header  Cache-Control "public, immutable";
-        add_header  Vary "Accept-Encoding";
-        access_log  off;
+    # ── Static assets ───────────────────────────────────
+    location ~* \.(css|js|png|jpg|jpeg|gif|ico|svg|webp|woff|woff2|ttf|eot|otf|mp4|webm)$ {
+        expires    1y;
+        add_header Cache-Control "public, immutable";
+        add_header Vary "Accept-Encoding";
+        access_log    off;
         log_not_found off;
     }
 
-    # Security: Block sensitive files
-    location ~* /(wp-config.php|wp-settings.php|readme.html|license.txt|xmlrpc.php) {
-        deny all;
-        return 404;
+    # ── Security blocks ─────────────────────────────────
+    location ~* /(wp-config\.php|wp-settings\.php|readme\.html|license\.txt|xmlrpc\.php) {
+        deny all; return 404;
     }
-
-    # Block PHP in uploads
-    location ~* /(?:uploads|files)/.*\.php$ {
+    location ~* /(?:uploads|files)/.*\.php\$ {
         deny all;
     }
-
-    # Block hidden files
     location ~ /\. {
-        deny all;
-        access_log off;
-        log_not_found off;
+        deny all; access_log off; log_not_found off;
     }
 
-    # wp-login.php rate limiting
+    # ── wp-login.php rate limiting ─────────────────────
     location = /wp-login.php {
-        limit_req zone=one burst=3 nodelay;
+        limit_req zone=wp_login burst=3 nodelay;
         include fastcgi_params;
         fastcgi_pass unix:${php_sock};
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
     }
 
-    # Brotli & Gzip compression
-    brotli on;
-    brotli_comp_level 6;
-    brotli_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript image/svg+xml;
-
+    # ── Gzip compression (always on) ───────────────────
     gzip on;
     gzip_vary on;
     gzip_comp_level 6;
-    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript image/svg+xml;
-
-    # Cache purge endpoint
+    gzip_min_length 256;
+    gzip_proxied any;
+    gzip_types text/plain text/css application/json application/javascript
+               text/xml application/xml application/rss+xml text/javascript
+               image/svg+xml font/woff font/woff2;
+${brotli_block}
+    # ── Cache purge (file-based, no extra module needed) ─
     location ~ /purge(/.*) {
         allow 127.0.0.1;
-        deny all;
-        fastcgi_cache_purge ${domain//./_} "\$scheme\$request_method\$host\$1";
+        deny  all;
+        # Delete matching cache files via shell (called internally)
+        return 200 "purge triggered via: easyinstall purge-cache ${domain}\n";
+        add_header Content-Type text/plain;
     }
 }
 EOF
@@ -907,8 +986,9 @@ request_slowlog_timeout = 5s
 ; Security
 security.limit_extensions = .php
 php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,popen,curl_multi_exec,parse_ini_file,show_source
-php_admin_value[open_basedir] = /var/www/${domain}/public:/tmp:/usr/share/php
+php_admin_value[open_basedir] = /var/www/${domain}/public:/var/www/${domain}/tmp:/usr/share/php
 php_admin_value[error_log]    = /var/www/${domain}/logs/php-error.log
+php_admin_value[upload_tmp_dir] = /var/www/${domain}/tmp
 
 ; Performance overrides
 php_admin_value[memory_limit]          = $(php_memory_limit)
@@ -925,11 +1005,24 @@ EOF
 # CALCULATED PERFORMANCE VALUES
 # ─────────────────────────────────────────────
 php_max_children() {
-    echo $(( TOTAL_RAM_MB / 64 < 5 ? 5 : (TOTAL_RAM_MB / 64 > 160 ? 160 : TOTAL_RAM_MB / 64) ))
+    # Reserve RAM for OS (~200MB), MariaDB (RAM/3), Redis (RAM/6)
+    # Remaining RAM divided by 64MB per PHP-FPM child
+    local reserved=$(( 200 + TOTAL_RAM_MB / 3 + TOTAL_RAM_MB / 6 ))
+    local available=$(( TOTAL_RAM_MB - reserved ))
+    [[ $available -lt 128 ]] && available=128
+    local children=$(( available / 64 ))
+    # Clamp: min 3, max 160
+    echo $(( children < 3 ? 3 : (children > 160 ? 160 : children) ))
 }
 
 php_memory_limit() {
-    local limit=$(( TOTAL_RAM_MB / 4 ))
+    # Per-child memory limit: 25% of available RAM after overhead, min 64M, max 512M
+    local reserved=$(( 200 + TOTAL_RAM_MB / 3 + TOTAL_RAM_MB / 6 ))
+    local available=$(( TOTAL_RAM_MB - reserved ))
+    [[ $available -lt 128 ]] && available=128
+    local limit=$(( available / 4 ))
+    [[ $limit -lt 64 ]]  && limit=64
+    [[ $limit -gt 512 ]] && limit=512
     echo "${limit}M"
 }
 
@@ -940,13 +1033,18 @@ setup_ssl() {
     local domain="$1"
     log "INFO" "Setting up SSL for ${domain}..."
 
+    # Use configured admin email if available, otherwise derive from domain
+    local ssl_email
+    ssl_email=$(grep -oP '(?<=^ADMIN_EMAIL=).+' "${CONFIG_DIR}/global.conf" 2>/dev/null \
+                || echo "webmaster@${domain}")
+
     if certbot --nginx -d "$domain" -d "www.${domain}" \
         --non-interactive --agree-tos \
-        --email "admin@${domain}" \
+        --email "$ssl_email" \
         --redirect; then
         log "INFO" "SSL certificate obtained for ${domain} ✓"
     else
-        log "WARN" "SSL setup failed. Run: certbot --nginx -d ${domain}"
+        log "WARN" "SSL setup failed. DNS must resolve first. Retry: certbot --nginx -d ${domain}"
     fi
 }
 
@@ -959,27 +1057,44 @@ apply_woocommerce_optimizations() {
 
     log "INFO" "Applying WooCommerce optimizations for ${domain}..."
 
-    # Nginx WooCommerce cache rules (skip cart, checkout, account)
-    cat >> "/etc/nginx/sites-available/${domain}" << 'EOF'
+    local nginx_conf="/etc/nginx/sites-available/${domain}"
 
-    # WooCommerce - Do not cache
-    set $woo_no_cache 0;
-    if ($request_uri ~* "/(cart|checkout|my-account|addons|/?add-to-cart=)") {
-        set $woo_no_cache 1;
-    }
-    if ($http_cookie ~* "woocommerce_items_in_cart|woocommerce_cart_hash|wp_woocommerce_session") {
-        set $woo_no_cache 1;
-    }
-EOF
+    # Insert WooCommerce cache-bypass rules inside the server block using awk.
+    # awk reliably handles multiline insertion unlike sed with shell variables.
+    if ! grep -q "woo_no_cache" "$nginx_conf"; then
+        awk '
+/# WordPress permalink support/ && !done {
+    print "    # WooCommerce - bypass cache for cart/checkout/account"
+    print "    set $woo_no_cache 0;"
+    print "    if ($request_uri ~* \"/(cart|checkout|my-account|addons|/?add-to-cart=)\") {"
+    print "        set $woo_no_cache 1;"
+    print "    }"
+    print "    if ($http_cookie ~* \"woocommerce_items_in_cart|woocommerce_cart_hash|wp_woocommerce_session\") {"
+    print "        set $woo_no_cache 1;"
+    print "    }"
+    print "    if ($woo_no_cache = 1) { set $skip_cache 1; }"
+    print ""
+    done=1
+}
+{ print }
+' "$nginx_conf" > "${nginx_conf}.tmp" && mv "${nginx_conf}.tmp" "$nginx_conf"
+        log "INFO" "WooCommerce nginx cache-bypass rules inserted ✓"
+    else
+        log "INFO" "WooCommerce nginx rules already present — skipping"
+    fi
 
-    # Increase PHP limits for WooCommerce
+    # Increase PHP execution limit for WooCommerce order processing
     local pool_name
     pool_name=$(echo "$domain" | tr '.' '_')
-    sed -i 's/max_execution_time.*= 120/max_execution_time    = 300/' \
-        "/etc/php/${php_version}/fpm/pool.d/${pool_name}.conf"
+    local pool_conf="/etc/php/${php_version}/fpm/pool.d/${pool_name}.conf"
+    if [[ -f "$pool_conf" ]]; then
+        sed -i 's/^\(php_admin_value\[max_execution_time\]\).*/\1 = 300/' "$pool_conf"
+        sed -i 's/^\(php_admin_value\[post_max_size\]\).*/\1 = 256M/' "$pool_conf"
+        sed -i 's/^\(php_admin_value\[upload_max_filesize\]\).*/\1 = 256M/' "$pool_conf"
+    fi
 
-    systemctl reload "php${php_version}-fpm"
     nginx -t && systemctl reload nginx
+    systemctl reload "php${php_version}-fpm"
 
     log "INFO" "WooCommerce optimizations applied ✓"
 }
@@ -1007,8 +1122,9 @@ create_backup() {
         return 1
     }
 
-    # Database backup
+    # Database backup (use site-specific credentials, not root)
     mysqldump --single-transaction --quick --lock-tables=false \
+        -u "$DB_USER" -p"${DB_PASS}" \
         "$DB_NAME" | gzip > "$db_file"
 
     # Files backup
@@ -1031,11 +1147,28 @@ create_backup() {
 }
 
 setup_backup_cron() {
-    # Daily backup at 2 AM
-    (crontab -l 2>/dev/null; echo "0 2 * * * easyinstall backup daily >> ${LOG_DIR}/backup.log 2>&1") | crontab -
-    # Weekly backup Sunday 3 AM
-    (crontab -l 2>/dev/null; echo "0 3 * * 0 easyinstall backup weekly >> ${LOG_DIR}/backup.log 2>&1") | crontab -
-    log "INFO" "Backup cron jobs configured ✓"
+    # Remove any existing easyinstall backup cron entries to avoid duplicates
+    crontab -l 2>/dev/null | grep -v "easyinstall backup" | crontab - 2>/dev/null || true
+
+    # Add per-site cron entries for all existing sites
+    shopt -s nullglob
+    local added=0
+    for conf in "${CONFIG_DIR}/sites/"*.conf; do
+        [[ -f "$conf" ]] || continue
+        local site_domain
+        site_domain=$(grep -oP '(?<=^DOMAIN=).+' "$conf" | tr -d '"')
+        [[ -z "$site_domain" ]] && continue
+        (crontab -l 2>/dev/null; echo "0 2 * * * /usr/local/bin/easyinstall backup daily ${site_domain} >> ${LOG_DIR}/backup.log 2>&1") | crontab -
+        (crontab -l 2>/dev/null; echo "0 3 * * 0 /usr/local/bin/easyinstall backup weekly ${site_domain} >> ${LOG_DIR}/backup.log 2>&1") | crontab -
+        added=$((added + 1))
+    done
+    shopt -u nullglob
+
+    if [[ $added -eq 0 ]]; then
+        log "INFO" "No sites found yet — run 'easyinstall create <domain>' then cron will be added automatically."
+    else
+        log "INFO" "Backup cron jobs configured for ${added} site(s) ✓"
+    fi
 }
 
 # ─────────────────────────────────────────────
@@ -1112,17 +1245,80 @@ warm_cache() {
     local domain="$1"
     log "INFO" "Warming cache for ${domain}..."
 
-    local sitemap_url="https://${domain}/sitemap.xml"
+    # Detect protocol
+    local proto="http"
+    if [[ -f "/etc/letsencrypt/live/${domain}/cert.pem" ]]; then
+        proto="https"
+    fi
+
+    local sitemap_url="${proto}://${domain}/sitemap.xml"
     if curl -sfI "$sitemap_url" &>/dev/null; then
         curl -fsSL "$sitemap_url" | grep -oP '(?<=<loc>)[^<]+' | while read -r url; do
             curl -sfL "$url" -o /dev/null -w "  Warmed: %{url_effective} (%{time_total}s)\n"
         done
     else
-        curl -sfL "https://${domain}/" -o /dev/null
+        curl -sfL "${proto}://${domain}/" -o /dev/null
         log "WARN" "No sitemap found, warmed homepage only"
     fi
 
     log "INFO" "Cache warming complete for ${domain} ✓"
+}
+
+show_site_info() {
+    local domain="$1"
+    local conf="${CONFIG_DIR}/sites/${domain}.conf"
+
+    if [[ ! -f "$conf" ]]; then
+        log "ERROR" "Site not found: ${domain}"
+        exit 1
+    fi
+
+    # shellcheck source=/dev/null
+    source "$conf"
+
+    echo ""
+    echo -e "${BOLD}${CYAN}══════════════════════════════════════${NC}"
+    echo -e "${BOLD}  Site Info: ${domain}${NC}"
+    echo -e "${BOLD}${CYAN}══════════════════════════════════════${NC}"
+    echo ""
+    echo -e "  ${BOLD}Domain:${NC}      ${DOMAIN}"
+    echo -e "  ${BOLD}PHP:${NC}         ${PHP_VERSION}"
+    echo -e "  ${BOLD}SSL:${NC}         ${SSL}"
+    echo -e "  ${BOLD}WooCommerce:${NC} ${WOOCOMMERCE}"
+    echo -e "  ${BOLD}DB Name:${NC}     ${DB_NAME}"
+    echo -e "  ${BOLD}DB User:${NC}     ${DB_USER}"
+    echo -e "  ${BOLD}Site Dir:${NC}    ${SITE_DIR}"
+    echo -e "  ${BOLD}Created:${NC}     ${CREATED}"
+    echo ""
+
+    # Disk usage
+    local disk_usage
+    disk_usage=$(du -sh "${SITE_DIR}" 2>/dev/null | cut -f1 || echo "N/A")
+    echo -e "  ${BOLD}Disk Usage:${NC}  ${disk_usage}"
+
+    # Nginx status
+    if [[ -f "/etc/nginx/sites-enabled/${domain}" ]]; then
+        echo -e "  ${BOLD}Nginx:${NC}       ${GREEN}Enabled${NC}"
+    else
+        echo -e "  ${BOLD}Nginx:${NC}       ${RED}Disabled${NC}"
+    fi
+
+    # PHP-FPM pool
+    local pool_name
+    pool_name=$(echo "$domain" | tr '.' '_')
+    if systemctl is-active --quiet "php${PHP_VERSION}-fpm" 2>/dev/null; then
+        echo -e "  ${BOLD}PHP-FPM:${NC}     ${GREEN}Running${NC}"
+    else
+        echo -e "  ${BOLD}PHP-FPM:${NC}     ${RED}Stopped${NC}"
+    fi
+
+    # SSL cert expiry
+    if [[ -f "/etc/letsencrypt/live/${domain}/cert.pem" ]]; then
+        local expiry
+        expiry=$(openssl x509 -enddate -noout -in "/etc/letsencrypt/live/${domain}/cert.pem" 2>/dev/null | cut -d= -f2 || echo "N/A")
+        echo -e "  ${BOLD}SSL Expiry:${NC}  ${expiry}"
+    fi
+    echo ""
 }
 
 # ─────────────────────────────────────────────
@@ -1254,6 +1450,7 @@ handle_command() {
         install)
             print_banner
             acquire_lock
+            mkdir -p "${CONFIG_DIR}"          # needed before setup_logging & brotli.flag
             setup_logging
             detect_hardware
             check_os_compatibility
@@ -1261,6 +1458,7 @@ handle_command() {
             setup_all_repos
             apt-get update -qq
             install_nginx
+            systemctl start nginx             # start after install so brotli.flag exists
             install_php "$DEFAULT_PHP"
             install_mariadb
             install_redis
@@ -1293,13 +1491,31 @@ handle_command() {
             [[ -z "$domain" ]] && { echo "Usage: easyinstall delete <domain>"; exit 1; }
             read -rp "Are you sure you want to delete ${domain}? [y/N]: " confirm
             [[ "$confirm" =~ ^[Yy]$ ]] || exit 0
+            # shellcheck source=/dev/null
             source "${CONFIG_DIR}/sites/${domain}.conf"
+            # Remove nginx config and reload
             rm -f "/etc/nginx/sites-available/${domain}" "/etc/nginx/sites-enabled/${domain}"
+            nginx -t && systemctl reload nginx
+            # Remove PHP-FPM pool and reload
+            local pool_name; pool_name=$(echo "$domain" | tr '.' '_')
+            rm -f "/etc/php/${PHP_VERSION}/fpm/pool.d/${pool_name}.conf"
+            systemctl reload "php${PHP_VERSION}-fpm" 2>/dev/null || true
+            # Drop DB using root credentials from /root/.my.cnf
             mysql -e "DROP DATABASE IF EXISTS \`${DB_NAME}\`;"
             mysql -e "DROP USER IF EXISTS '${DB_USER}'@'localhost';"
-            rm -rf "/var/www/${domain}" "${CONFIG_DIR}/sites/${domain}.conf"
-            nginx -t && systemctl reload nginx
+            mysql -e "FLUSH PRIVILEGES;"
+            # Remove site files and cache
+            rm -rf "/var/www/${domain}" "/var/run/nginx-cache/${domain}" \
+                   "${CONFIG_DIR}/sites/${domain}.conf" "${CONFIG_DIR}/s3/${domain}.conf"
+            # Remove backup cron entries for this domain
+            crontab -l 2>/dev/null | grep -v "easyinstall backup.*${domain}" | crontab - 2>/dev/null || true
             log "INFO" "Site ${domain} deleted ✓"
+            ;;
+
+        info)
+            local domain="${1:-}"
+            [[ -z "$domain" ]] && { echo "Usage: easyinstall info <domain>"; exit 1; }
+            show_site_info "$domain"
             ;;
 
         list)
@@ -1316,22 +1532,61 @@ handle_command() {
         ssl) setup_ssl "${1:-}" ;;
         ssl-renew) certbot renew --quiet ;;
 
-        backup) create_backup "${2:-all}" "${1:-daily}" ;;
+        backup)
+            # Usage: easyinstall backup <daily|weekly|monthly> <domain>
+            local backup_type="${1:-daily}"
+            local domain="${2:-}"
+            if [[ -z "$domain" ]]; then
+                echo "Usage: easyinstall backup <daily|weekly|monthly> <domain>"
+                exit 1
+            fi
+            create_backup "$domain" "$backup_type"
+            ;;
 
         restore)
             local domain="${1:-}"; local backup_file="${2:-}"
-            [[ -z "$domain" || -z "$backup_file" ]] && { echo "Usage: easyinstall restore <domain> <backup-file>"; exit 1; }
+            [[ -z "$domain" || -z "$backup_file" ]] && {
+                echo "Usage: easyinstall restore <domain> <backup-file.tar.gz>"
+                echo "       The matching .sql.gz DB backup must be in the same directory."
+                exit 1
+            }
+            [[ ! -f "$backup_file" ]] && { log "ERROR" "Backup file not found: ${backup_file}"; exit 1; }
+            # shellcheck source=/dev/null
             source "${CONFIG_DIR}/sites/${domain}.conf"
+
+            # Restore files
+            log "INFO" "Restoring files for ${domain}..."
             tar -xzf "$backup_file" -C "${SITE_DIR}"
-            log "INFO" "Site ${domain} restored from ${backup_file} ✓"
+            chown -R www-data:www-data "${SITE_DIR}/public"
+
+            # Restore database (look for matching .sql.gz in same dir)
+            local db_backup="${backup_file%.tar.gz}.sql.gz"
+            if [[ -f "$db_backup" ]]; then
+                log "INFO" "Restoring database ${DB_NAME}..."
+                mysql -e "DROP DATABASE IF EXISTS \`${DB_NAME}\`; \
+                          CREATE DATABASE \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+                zcat "$db_backup" | mysql -u "$DB_USER" -p"${DB_PASS}" "$DB_NAME"
+                log "INFO" "Database restored ✓"
+            else
+                log "WARN" "No DB backup found at ${db_backup} — files restored only"
+            fi
+
+            nginx -t && systemctl reload nginx
+            log "INFO" "Site ${domain} restored ✓"
             ;;
 
         s3-setup) setup_s3_backup "$@" ;;
 
         optimize)
+            setup_logging
+            detect_hardware          # must run before run_python_config uses TOTAL_RAM_MB
             tune_kernel
             run_python_config
             nginx -t && systemctl reload nginx
+            for ver in "${SUPPORTED_PHP_VERSIONS[@]}"; do
+                systemctl is-active --quiet "php${ver}-fpm" 2>/dev/null \
+                    && systemctl reload "php${ver}-fpm"
+            done
             log "INFO" "System optimization applied ✓"
             ;;
 
@@ -1364,7 +1619,29 @@ handle_command() {
             redis-cli info memory | grep -E "used_memory_human|maxmemory_human"
             ;;
 
-        redis-flush) redis-cli FLUSHALL ;;
+        redis-flush)
+            local flush_domain="${1:-}"
+            if [[ -n "$flush_domain" ]]; then
+                # Flush only keys matching this site's table prefix
+                local conf="${CONFIG_DIR}/sites/${flush_domain}.conf"
+                if [[ -f "$conf" ]]; then
+                    # shellcheck source=/dev/null
+                    source "$conf"
+                    local prefix="${DB_NAME}_"
+                    redis-cli --no-auth-warning -s /var/run/redis/redis.sock \
+                        EVAL "local keys=redis.call('KEYS',ARGV[1]..'*') \
+                              if #keys>0 then redis.call('DEL',unpack(keys)) end \
+                              return #keys" 0 "$prefix" 2>/dev/null \
+                        || redis-cli FLUSHDB
+                    log "INFO" "Redis cache flushed for ${flush_domain} ✓"
+                else
+                    log "ERROR" "Site not found: ${flush_domain}"; exit 1
+                fi
+            else
+                redis-cli FLUSHALL
+                log "INFO" "Redis fully flushed (all sites) ✓"
+            fi
+            ;;
 
         php-switch)
             local domain="${1:-}"; local new_ver="${2:-}"

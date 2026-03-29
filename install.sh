@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # EasyInstall Ultra - Bootstrap Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/sugan0927/easy-install-Ultra/main/install.sh | sudo bash
+# Remote:  curl -fsSL https://raw.githubusercontent.com/sugan0927/easy-install-Ultra/main/install.sh | sudo bash
+# Local:   sudo bash install.sh
 
 set -euo pipefail
 
@@ -35,16 +36,24 @@ RAM_MB=$(awk '/MemTotal/{printf "%d",$2/1024}' /proc/meminfo)
 [[ $RAM_MB -lt 512 ]] && { echo -e "${RED}✗ Min 512MB RAM required (found: ${RAM_MB}MB)${NC}"; exit 1; }
 echo -e "${GREEN}✓ RAM: ${RAM_MB}MB${NC}"
 
-# Install git if needed
-command -v git &>/dev/null || apt-get install -y -qq git
+# Determine source: local directory (when run as bash install.sh) or GitHub
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
-# Clone or update repo
-if [[ -d "$INSTALL_DIR/.git" ]]; then
-    echo -e "${YELLOW}→ Updating existing installation...${NC}"
-    git -C "$INSTALL_DIR" pull --quiet
+if [[ -f "${SCRIPT_DIR}/easyinstall.sh" && -f "${SCRIPT_DIR}/config.py" ]]; then
+    # ── LOCAL INSTALL (from zip / cloned repo) ──────────────────────────
+    echo -e "${YELLOW}→ Installing from local directory: ${SCRIPT_DIR}${NC}"
+    mkdir -p "$INSTALL_DIR"
+    cp -r "${SCRIPT_DIR}/." "$INSTALL_DIR/"
 else
-    echo -e "${YELLOW}→ Downloading EasyInstall Ultra...${NC}"
-    git clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR" --quiet
+    # ── REMOTE INSTALL (piped from curl) ────────────────────────────────
+    echo -e "${YELLOW}→ Downloading EasyInstall Ultra from GitHub...${NC}"
+    command -v git &>/dev/null || apt-get install -y -qq git
+    if [[ -d "$INSTALL_DIR/.git" ]]; then
+        echo -e "${YELLOW}→ Updating existing installation...${NC}"
+        git -C "$INSTALL_DIR" pull --quiet
+    else
+        git clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR" --quiet
+    fi
 fi
 
 chmod +x "${INSTALL_DIR}/easyinstall.sh"
@@ -56,13 +65,13 @@ echo -e "${GREEN}✓ 'easyinstall' command installed${NC}"
 
 echo ""
 echo -e "${BOLD}${GREEN}╔══════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}${GREEN}║  EasyInstall Ultra downloaded!           ║${NC}"
+echo -e "${BOLD}${GREEN}║  EasyInstall Ultra installed!            ║${NC}"
 echo -e "${BOLD}${GREEN}║                                          ║${NC}"
 echo -e "${BOLD}${GREEN}║  Run full install:                       ║${NC}"
-echo -e "${BOLD}${GREEN}║    easyinstall install                   ║${NC}"
+echo -e "${BOLD}${GREEN}║    sudo easyinstall install              ║${NC}"
 echo -e "${BOLD}${GREEN}║                                          ║${NC}"
 echo -e "${BOLD}${GREEN}║  Create a site:                          ║${NC}"
-echo -e "${BOLD}${GREEN}║    easyinstall create example.com        ║${NC}"
+echo -e "${BOLD}${GREEN}║    sudo easyinstall create example.com   ║${NC}"
 echo -e "${BOLD}${GREEN}║            --ssl --woocommerce           ║${NC}"
 echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════╝${NC}"
 echo ""

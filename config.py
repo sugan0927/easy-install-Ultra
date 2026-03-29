@@ -209,7 +209,7 @@ class NginxConfigurator:
                     application/rss+xml image/svg+xml font/woff font/woff2;
 
                 # Rate limiting zones
-                limit_req_zone $binary_remote_addr zone=one:10m rate=30r/m;
+                limit_req_zone $binary_remote_addr zone=wp_login:10m rate=20r/m;
                 limit_req_zone $binary_remote_addr zone=api:10m rate=100r/m;
                 limit_conn_zone $binary_remote_addr zone=addr:10m;
 
@@ -423,21 +423,23 @@ class PHPConfigurator:
             opcache.enable_cli                = 0
             opcache.memory_consumption        = {self.hw.php_opcache_memory}
             opcache.interned_strings_buffer   = {self.hw.php_interned_strings}
-            opcache.max_accelerated_files     = 20000
-            opcache.max_wasted_percentage     = 10
+            opcache.max_accelerated_files     = 100000
+            opcache.max_wasted_percentage     = 5
             opcache.validate_timestamps       = 0
             opcache.revalidate_freq           = 0
             opcache.fast_shutdown             = 1
             opcache.save_comments             = 1
             opcache.huge_code_pages           = 1
+            opcache.consistency_checks        = 0
 
-            ; JIT (PHP 8.x)
+            ; JIT (PHP 8.x) - tracing mode = best for WordPress workloads
             opcache.jit                       = tracing
             opcache.jit_buffer_size           = {self.hw.php_jit_buffer}M
 
-            ; File cache
-            opcache.file_cache                = /tmp/opcache
+            ; Persistent file cache (survives PHP-FPM restarts)
+            opcache.file_cache                = /var/cache/php-opcache
             opcache.file_cache_only           = 0
+            opcache.file_cache_consistency_checks = 0
         """)
 
     def apcu_ini(self) -> str:
@@ -491,7 +493,10 @@ class PHPConfigurator:
 
     def write_all(self) -> None:
         ver = self.hw.php_version
-        os.makedirs(f"/tmp/opcache", exist_ok=True)
+        # Persistent opcache file cache dir (survives reboots unlike /tmp)
+        opcache_dir = Path("/var/cache/php-opcache")
+        opcache_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["chown", f"www-data:www-data", str(opcache_dir)], capture_output=True)
 
         configs = {
             f"/etc/php/{ver}/fpm/php.ini":                     self.php_ini(),
@@ -534,8 +539,8 @@ class MariaDBConfigurator:
             innodb_file_per_table            = 1
             innodb_flush_log_at_trx_commit   = 2
             innodb_flush_method              = O_DIRECT
+            innodb_redo_log_capacity         = 536870912
             innodb_log_buffer_size           = 64M
-            innodb_log_file_size             = 512M
             innodb_io_capacity               = {self.hw.mysql_innodb_io_capacity}
             innodb_io_capacity_max           = {self.hw.mysql_innodb_io_capacity * 2}
             innodb_read_io_threads           = {self.hw.mysql_innodb_read_threads}
@@ -554,10 +559,7 @@ class MariaDBConfigurator:
             # ── Caches ─────────────────────────────────
             table_open_cache         = {self.hw.mysql_table_open_cache}
             table_definition_cache   = 4096
-            query_cache_type         = 1
-            query_cache_size         = {self.hw.mysql_query_cache_mb}M
-            query_cache_limit        = 4M
-            query_cache_min_res_unit = 2k
+            # NOTE: query_cache removed in MariaDB 10.9 — do NOT add it back
 
             # ── Temp tables ────────────────────────────
             tmp_table_size           = 64M
