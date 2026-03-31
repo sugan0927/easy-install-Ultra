@@ -16,16 +16,6 @@ main               = "worker/worker.js"
 compatibility_date = "2024-09-23"
 account_id         = "dcb6aa20e37973db85d2401662eb431f"
 
-# ── Routes ──────────────────────────────────────────────────
-# Replace YOUR_DOMAIN.COM with your real domain
-[[routes]]
-pattern   = "YOUR_DOMAIN.COM/*"
-zone_name = "ez-ins.site"
-
-[[routes]]
-pattern   = "www.YOUR_DOMAIN.COM/*"
-zone_name = "www.ez-ins.site"
-
 # ── KV Namespace (for wp-login rate limiting) ────────────────
 # To create:  wrangler kv namespace create "LOGIN_KV"
 # Then paste the returned id= value below.
