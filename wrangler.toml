@@ -1,0 +1,44 @@
+# ─────────────────────────────────────────────────────────────
+# EasyInstall Ultra — Cloudflare Worker
+# Deploy via: Cloudflare Dashboard → Workers & Pages → Create
+#
+# BEFORE DEPLOYING — fill in these 3 values:
+#   1. name       → your worker name (any slug, e.g. "my-wp-worker")
+#   2. account_id → Cloudflare dashboard → right sidebar → "Account ID"
+#   3. routes     → replace YOUR_DOMAIN.COM with your actual domain
+#
+# Secrets (set in Cloudflare Dashboard → Worker → Settings → Variables):
+#   PURGE_WEBHOOK_SECRET  → any random string (must match functions.php)
+# ─────────────────────────────────────────────────────────────
+
+name               = "easyinstall-ultra-worker"
+main               = "worker/worker.js"
+compatibility_date = "2024-09-23"
+account_id         = "YOUR_ACCOUNT_ID"
+
+# ── Routes ──────────────────────────────────────────────────
+# Replace YOUR_DOMAIN.COM with your real domain
+[[routes]]
+pattern   = "YOUR_DOMAIN.COM/*"
+zone_name = "YOUR_DOMAIN.COM"
+
+[[routes]]
+pattern   = "www.YOUR_DOMAIN.COM/*"
+zone_name = "YOUR_DOMAIN.COM"
+
+# ── KV Namespace (for wp-login rate limiting) ────────────────
+# To create:  wrangler kv namespace create "LOGIN_KV"
+# Then paste the returned id= value below.
+# If you skip this, rate limiting is simply disabled (not an error).
+#
+# [[kv_namespaces]]
+# binding = "LOGIN_KV"
+# id      = "PASTE_KV_ID_HERE"
+
+# ── Environment Variables ────────────────────────────────────
+[vars]
+ENVIRONMENT = "production"
+
+# ── Observability ────────────────────────────────────────────
+[observability]
+enabled = true
