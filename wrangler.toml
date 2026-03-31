@@ -20,11 +20,11 @@ account_id         = "03d766f8644f393082bb757b4c114759"
 # Replace YOUR_DOMAIN.COM with your real domain
 [[routes]]
 pattern   = "YOUR_DOMAIN.COM/*"
-zone_name = "YOUR_DOMAIN.COM"
+zone_name = "wo.easyinstall.site"
 
 [[routes]]
 pattern   = "www.YOUR_DOMAIN.COM/*"
-zone_name = "YOUR_DOMAIN.COM"
+zone_name = "www.wo.easyinstall.site"
 
 # ── KV Namespace (for wp-login rate limiting) ────────────────
 # To create:  wrangler kv namespace create "LOGIN_KV"
