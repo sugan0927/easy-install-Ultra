@@ -18,11 +18,7 @@ account_id         = "dcb6aa20e37973db85d2401662eb431f"
 # !! REQUIRED: Replace YOUR_DOMAIN.COM with your real domain !!
 [[routes]]
 pattern   = "YOUR_DOMAIN.COM/*"
-zone_name = "YOUR_DOMAIN.COM"
-
-[[routes]]
-pattern   = "www.YOUR_DOMAIN.COM/*"
-zone_name = "YOUR_DOMAIN.COM"
+zone_name = "ez-ins.site"
 
 # ── KV Namespace (wp-login rate limiting) ────────────────────
 # Optional — skip for first deploy, add later if needed.
