@@ -14,7 +14,7 @@
 name               = "easyinstall-ultra-worker"
 main               = "worker/worker.js"
 compatibility_date = "2024-09-23"
-account_id         = "YOUR_ACCOUNT_ID"
+account_id         = "03d766f8644f393082bb757b4c114759"
 
 # ── Routes ──────────────────────────────────────────────────
 # Replace YOUR_DOMAIN.COM with your real domain
