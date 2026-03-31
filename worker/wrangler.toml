@@ -37,7 +37,7 @@ zone_name = "easyinstall.site"
 # Then paste the returned id below
 [[kv_namespaces]]
 binding = "LOGIN_KV"
-id      = "REPLACE_WITH_KV_NAMESPACE_ID"
+id      = "c4158f8afe1b4dadbcf971651f7f94ad"
 
 # ── Environment Variables (non-secret) ──────────────────────
 [vars]
