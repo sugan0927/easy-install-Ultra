@@ -1577,8 +1577,35 @@ handle_command() {
 
         s3-setup) setup_s3_backup "$@" ;;
 
+        worker-deploy)
+            local domain="${1:-}"
+            [[ -z "$domain" ]] && { echo "Usage: easyinstall worker-deploy <domain>"; exit 1; }
+            local worker_script="${SCRIPT_DIR}/worker/deploy-worker.sh"
+            [[ ! -f "$worker_script" ]] && { log "ERROR" "worker/deploy-worker.sh not found in ${SCRIPT_DIR}"; exit 1; }
+            bash "$worker_script" "$domain"
+            ;;
+
+        worker-update)
+            # Re-deploy worker after code changes
+            local conf="/etc/easyinstall/worker.conf"
+            [[ ! -f "$conf" ]] && { log "ERROR" "Worker not deployed yet. Run: easyinstall worker-deploy <domain>"; exit 1; }
+            # shellcheck source=/dev/null
+            source "$conf"
+            info "Re-deploying worker for ${DOMAIN}..."
+            cd "$WORKER_DIR" && wrangler deploy
+            log "INFO" "Worker updated ✓"
+            ;;
+
+        worker-logs)
+            # Tail live Worker logs from Cloudflare
+            local conf="/etc/easyinstall/worker.conf"
+            [[ ! -f "$conf" ]] && { log "ERROR" "Worker not deployed yet."; exit 1; }
+            # shellcheck source=/dev/null
+            source "$conf"
+            cd "$WORKER_DIR" && wrangler tail
+            ;;
+
         optimize)
-            setup_logging
             detect_hardware          # must run before run_python_config uses TOTAL_RAM_MB
             tune_kernel
             run_python_config

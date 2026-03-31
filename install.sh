@@ -58,6 +58,7 @@ fi
 
 chmod +x "${INSTALL_DIR}/easyinstall.sh"
 chmod +x "${INSTALL_DIR}/config.py"
+chmod +x "${INSTALL_DIR}/worker/deploy-worker.sh"
 
 # Symlink CLI
 ln -sfn "${INSTALL_DIR}/easyinstall.sh" /usr/local/bin/easyinstall
@@ -67,11 +68,15 @@ echo ""
 echo -e "${BOLD}${GREEN}╔══════════════════════════════════════════╗${NC}"
 echo -e "${BOLD}${GREEN}║  EasyInstall Ultra installed!            ║${NC}"
 echo -e "${BOLD}${GREEN}║                                          ║${NC}"
-echo -e "${BOLD}${GREEN}║  Run full install:                       ║${NC}"
+echo -e "${BOLD}${GREEN}║  Run full stack install:                 ║${NC}"
 echo -e "${BOLD}${GREEN}║    sudo easyinstall install              ║${NC}"
 echo -e "${BOLD}${GREEN}║                                          ║${NC}"
-echo -e "${BOLD}${GREEN}║  Create a site:                          ║${NC}"
+echo -e "${BOLD}${GREEN}║  Create a WordPress site:                ║${NC}"
 echo -e "${BOLD}${GREEN}║    sudo easyinstall create example.com   ║${NC}"
 echo -e "${BOLD}${GREEN}║            --ssl --woocommerce           ║${NC}"
+echo -e "${BOLD}${GREEN}║                                          ║${NC}"
+echo -e "${BOLD}${GREEN}║  Deploy Cloudflare Worker (optional):    ║${NC}"
+echo -e "${BOLD}${GREEN}║    sudo easyinstall worker-deploy        ║${NC}"
+echo -e "${BOLD}${GREEN}║            example.com                   ║${NC}"
 echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════╝${NC}"
 echo ""
