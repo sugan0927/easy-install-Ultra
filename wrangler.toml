@@ -1,38 +1,30 @@
-# EasyInstall Ultra — Cloudflare Worker
-# Account: dcb6aa20e37973db85d2401662eb431f
-# Domain:  ez-ins.site
-
 name               = "easy-ultra"
 main               = "worker/worker.js"
 compatibility_date = "2024-09-23"
 account_id         = "dcb6aa20e37973db85d2401662eb431f"
 
-# ── Routes ────────────────────────────────────────────────────
-[[routes]]
-pattern   = "ez-ins.site/*"
-zone_name = "ez-ins.site"
-
-[[routes]]
-pattern   = "www.ez-ins.site/*"
-zone_name = "ez-ins.site"
-
-# ── KV Namespace (wp-login rate limiting — optional) ──────────
-# To enable: wrangler kv namespace create "LOGIN_KV"
-# Then uncomment and paste the returned id:
-#
-# [[kv_namespaces]]
-# binding = "LOGIN_KV"
-# id      = "PASTE_KV_ID_HERE"
-
-# ── Build ─────────────────────────────────────────────────────
 [build]
 command = "echo 'Worker ready'"
 
-# ── Environment Variables ─────────────────────────────────────
 [vars]
 ENVIRONMENT = "production"
-VPS_REPO    = "https://github.com/sugan0927/easy-install-Ultra"
 
-# ── Observability ─────────────────────────────────────────────
 [observability]
 enabled = true
+```
+
+यह deploy हो जाएगा ✅ — routes section नहीं है तो error नहीं आएगा।
+
+---
+
+## Deploy के बाद — Cloudflare Dashboard पर Route add करो:
+```
+Dashboard → Workers & Pages → easy-ultra
+→ Settings → Triggers → Add Route
+
+Route:       ez-ins.site/*
+Zone:        ez-ins.site
+
+फिर दोबारा:
+Route:       www.ez-ins.site/*
+Zone:        ez-ins.site
