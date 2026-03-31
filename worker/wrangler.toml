@@ -15,7 +15,7 @@
 
 name       = "easyinstall-ultra-worker"
 main       = "worker.js"
-account_id = "YOUR_ACCOUNT_ID"
+account_id = "03d766f8644f393082bb757b4c114759"
 
 # Use ES modules (required for `export default`)
 compatibility_date = "2024-01-01"
@@ -23,13 +23,13 @@ compatibility_date = "2024-01-01"
 # ── Routes ─────────────────────────────────────────────────
 # Worker runs on ALL paths of your domain
 [[routes]]
-pattern = "YOUR_DOMAIN.COM/*"
-zone_name = "YOUR_DOMAIN.COM"
+pattern = "wo.easyinstall.site/*"
+zone_name = "easyinstall.site"
 
 # Also cover www subdomain
 [[routes]]
-pattern = "www.YOUR_DOMAIN.COM/*"
-zone_name = "YOUR_DOMAIN.COM"
+pattern = "www.wo.easyinstall.site/*"
+zone_name = "easyinstall.site"
 
 # ── KV Namespaces ───────────────────────────────────────────
 # Used for wp-login.php rate limiting
