@@ -11,20 +11,3 @@ ENVIRONMENT = "production"
 
 [observability]
 enabled = true
-```
-
-यह deploy हो जाएगा ✅ — routes section नहीं है तो error नहीं आएगा।
-
----
-
-## Deploy के बाद — Cloudflare Dashboard पर Route add करो:
-```
-Dashboard → Workers & Pages → easy-ultra
-→ Settings → Triggers → Add Route
-
-Route:       ez-ins.site/*
-Zone:        ez-ins.site
-
-फिर दोबारा:
-Route:       www.ez-ins.site/*
-Zone:        ez-ins.site
