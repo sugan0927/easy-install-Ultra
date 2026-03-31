@@ -1,0 +1,60 @@
+# ─────────────────────────────────────────────────────────────
+# EasyInstall Ultra — Cloudflare Worker Config
+# Docs: https://developers.cloudflare.com/workers/wrangler/
+# ─────────────────────────────────────────────────────────────
+#
+# SETUP STEPS:
+#   1. Replace YOUR_DOMAIN.COM with your actual domain
+#   2. Replace YOUR_ACCOUNT_ID with your Cloudflare account ID
+#      (Find it: https://dash.cloudflare.com → right sidebar)
+#   3. Set secrets (never put real values here):
+#        wrangler secret put PURGE_WEBHOOK_SECRET
+#   4. Deploy:
+#        wrangler deploy
+# ─────────────────────────────────────────────────────────────
+
+name       = "easyinstall-ultra-worker"
+main       = "worker.js"
+account_id = "YOUR_ACCOUNT_ID"
+
+# Use ES modules (required for `export default`)
+compatibility_date = "2024-01-01"
+
+# ── Routes ─────────────────────────────────────────────────
+# Worker runs on ALL paths of your domain
+[[routes]]
+pattern = "YOUR_DOMAIN.COM/*"
+zone_name = "YOUR_DOMAIN.COM"
+
+# Also cover www subdomain
+[[routes]]
+pattern = "www.YOUR_DOMAIN.COM/*"
+zone_name = "YOUR_DOMAIN.COM"
+
+# ── KV Namespaces ───────────────────────────────────────────
+# Used for wp-login.php rate limiting
+# Create with: wrangler kv:namespace create "LOGIN_KV"
+# Then paste the returned id below
+[[kv_namespaces]]
+binding = "LOGIN_KV"
+id      = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# ── Environment Variables (non-secret) ──────────────────────
+[vars]
+ENVIRONMENT = "production"
+
+# ── Secrets (set via: wrangler secret put SECRET_NAME) ──────
+# PURGE_WEBHOOK_SECRET  — shared secret for /cf-purge endpoint
+# (Never put real secrets in this file)
+
+# ── Build ────────────────────────────────────────────────────
+[build]
+command = ""          # No build step needed for plain JS
+
+# ── Observability ────────────────────────────────────────────
+[observability]
+enabled = true
+
+# ── Limits ───────────────────────────────────────────────────
+[limits]
+cpu_ms = 50           # Max CPU time per request (Workers free tier: 10ms, paid: 50ms)
