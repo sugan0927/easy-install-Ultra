@@ -1,37 +1,30 @@
-# ─────────────────────────────────────────────────────────────
-# EasyInstall Ultra — Cloudflare Worker Config
+# EasyInstall Ultra — Cloudflare Worker
 # Account: dcb6aa20e37973db85d2401662eb431f
-#
-# STEP 1: Set your domain — replace YOUR_DOMAIN.COM below (2 places)
-# STEP 2: Set secret in Cloudflare Dashboard:
-#         Worker → Settings → Variables → Add variable
-#         Name: PURGE_WEBHOOK_SECRET  |  Value: any-random-string
-# STEP 3: Push to GitHub → Cloudflare auto-deploys
-# ─────────────────────────────────────────────────────────────
+# Domain:  ez-ins.site
 
-name               = "easyinstall-ultra-worker"
+name               = "easy-ultra"
 main               = "worker/worker.js"
 compatibility_date = "2024-09-23"
 account_id         = "dcb6aa20e37973db85d2401662eb431f"
 
 # ── Routes ────────────────────────────────────────────────────
-# !! REQUIRED: Replace YOUR_DOMAIN.COM with your real domain !!
 [[routes]]
-pattern   = "YOUR_DOMAIN.COM/*"
+pattern   = "ez-ins.site/*"
 zone_name = "ez-ins.site"
 
-# ── KV Namespace (wp-login rate limiting) ────────────────────
-# Optional — skip for first deploy, add later if needed.
-# To enable:
-#   1. Run:  wrangler kv namespace create "LOGIN_KV"
-#   2. Uncomment the 3 lines below and paste the id
+[[routes]]
+pattern   = "www.ez-ins.site/*"
+zone_name = "ez-ins.site"
+
+# ── KV Namespace (wp-login rate limiting — optional) ──────────
+# To enable: wrangler kv namespace create "LOGIN_KV"
+# Then uncomment and paste the returned id:
 #
 # [[kv_namespaces]]
 # binding = "LOGIN_KV"
 # id      = "PASTE_KV_ID_HERE"
 
 # ── Build ─────────────────────────────────────────────────────
-# Tells Cloudflare: no static site, this is a pure Worker
 [build]
 command = "echo 'Worker ready'"
 
